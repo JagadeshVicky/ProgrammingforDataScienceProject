@@ -1,0 +1,74 @@
+import chromadb
+from sentence_transformers import SentenceTransformer
+import requests
+import json
+
+# Initialize Chroma client and collection
+client = chromadb.PersistentClient(path="chroma_db")
+collection = client.get_collection("domain_knowledge")
+
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
+
+def retrieve_context(query, top_k=3):
+    query_vector = embedding_model.encode([query])[0].tolist()
+    results = collection.query(query_embeddings=[query_vector], n_results=top_k)
+    return results['documents'][0]
+
+def generate_text(prompt, max_tokens=1024, temperature=0.7, top_p=0.9):
+    url = "http://localhost:11434/api/generate"
+    payload = {
+        "model": "llama2-uncensored",
+        "prompt": prompt,
+        "temperature": temperature,
+        "max_new_tokens": max_tokens,
+        "top_p": top_p
+    }
+    headers = {"Content-Type": "application/json"}
+
+    response = requests.post(url, headers=headers, json=payload, stream=True)
+
+    full_response = []
+    for line in response.iter_lines():
+        if line:
+            data = json.loads(line.decode('utf-8'))
+            # If 'response' key exists, append it to the full response
+            if 'response' in data:
+                full_response.append(data['response'])
+            # Check if we are done
+            if data.get('done', False) is True:
+                break
+
+    return "".join(full_response)
+
+# Example user test case
+raw_test_cases = """Test Case 1: Verify that the payment endpoint processes a valid credit card transaction.
+Steps:
+1. Send a POST request to /payments with valid credit card info.
+Expected:
+- Response code 200
+- 'transaction_id' returned in JSON response
+"""
+
+context_docs = retrieve_context(raw_test_cases, top_k=3)
+
+system_msg = """You are a domain-specific test engineering assistant. You have expertise in payment request APIs and related specifications."""
+instructions = """Refine the provided test case to adhere to the Payment Request specifications. Add missing preconditions, clarify request parameters, detail expected responses, and incorporate relevant fields suggested by the specification."""
+context_text = "\n\n".join(context_docs)
+
+prompt = f"""
+{system_msg}
+
+Domain Context:
+{context_text}
+
+User Test Cases:
+{raw_test_cases}
+
+Instructions:
+{instructions}
+
+Refined Test Cases:
+"""
+
+refined_test_cases = generate_text(prompt)
+print("Refined Test Cases:\n", refined_test_cases)
